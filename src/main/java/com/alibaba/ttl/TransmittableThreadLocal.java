@@ -63,7 +63,7 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
      */
     protected void afterExecute() {
     }
-
+    //重写get和set方法确保变量备份在hold变量中
     @Override
     public final T get() {
         T value = super.get();
