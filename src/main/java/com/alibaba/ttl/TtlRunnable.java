@@ -28,7 +28,14 @@ public final class TtlRunnable implements Runnable {
     private final Runnable runnable;
     private final boolean releaseTtlValueReferenceAfterRun;
 
+    //各种静态包装方法最终都会走到此构造方法
     private TtlRunnable(Runnable runnable, boolean releaseTtlValueReferenceAfterRun) {
+        /*
+         1、capture()方法返回的对象类型是Map<TransmittableThreadLocal<?>, Object>，该方法在父线程中执行，
+        返回值是此时父线程包含的TransmittableThreadLocal变量及其在父线程中的取值。
+         2、当子线程执行TtlRunnable的run方法时，capturedRef也会随着TtlRunnable实例传入子线程中，子线程capturedRef变量中包含的
+         TransmittableThreadLocal变量继承自父线程，线程复用的情形下则跟上一次该子线程执行任务完成后的变量状态一致。
+         */
         this.capturedRef = new AtomicReference<Object>(capture());
         this.runnable = runnable;
         this.releaseTtlValueReferenceAfterRun = releaseTtlValueReferenceAfterRun;
@@ -39,6 +46,12 @@ public final class TtlRunnable implements Runnable {
      */
     @Override
     public void run() {
+        /*
+          1、run方法在子线程中执行
+          2、replay方法将capturedRef中保存的来自父线程中TransmittableThreadLocal变量写入到子线程对应的变量中，保证子线程每次执行时
+          TransmittableThreadLocal变量的初始值一致。该方法返回子线程此时包含的TransmittableThreadLocal变量。
+          3、restore方法用于还原子线程中包含的TransmittableThreadLocal变量至run方法开始执行的状态
+         */
         Object captured = capturedRef.get();
         if (captured == null || releaseTtlValueReferenceAfterRun && !capturedRef.compareAndSet(captured, null)) {
             throw new IllegalStateException("TTL value reference is released after run!");

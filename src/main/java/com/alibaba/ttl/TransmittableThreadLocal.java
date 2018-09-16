@@ -23,46 +23,22 @@ import java.util.logging.Logger;
 public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
     private static final Logger logger = Logger.getLogger(TransmittableThreadLocal.class.getName());
 
-    /**
-     * Computes the value for this transmittable thread-local variable
-     * as a function of the source thread's value at the time the task
-     * Object is created.  This method is called from {@link TtlRunnable} or
-     * {@link TtlCallable} when it create, before the task is started.
-     * <p>
-     * This method merely returns reference of its source thread value, and should be overridden
-     * if a different behavior is desired.
-     *
-     * @since 1.0.0
-     */
     protected T copy(T parentValue) {
         return parentValue;
     }
 
     /**
      * Callback method before task object({@link TtlRunnable}/{@link TtlCallable}) execute.
-     * <p>
-     * Default behavior is do nothing, and should be overridden
-     * if a different behavior is desired.
-     * <p>
-     * Do not throw any exception, just ignored.
-     *
-     * @since 1.2.0
      */
     protected void beforeExecute() {
     }
 
     /**
      * Callback method after task object({@link TtlRunnable}/{@link TtlCallable}) execute.
-     * <p>
-     * Default behavior is do nothing, and should be overridden
-     * if a different behavior is desired.
-     * <p>
-     * Do not throw any exception, just ignored.
-     *
-     * @since 1.2.0
      */
     protected void afterExecute() {
     }
+
     //重写get和set方法确保变量备份在hold变量中
     @Override
     public final T get() {
@@ -76,7 +52,7 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
     @Override
     public final void set(T value) {
         super.set(value);
-        if (null == value) { // may set null to remove value
+        if (null == value) {
             removeValue();
         } else {
             addValue();
@@ -93,14 +69,22 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
         super.remove();
     }
 
+    private T superGet(){
+        return super.get();
+    }
+
     private T copyValue() {
         return copy(get());
     }
 
-    // Note about holder:
-    // 1. The value of holder is type Map<TransmittableThreadLocal<?>, ?> (WeakHashMap implementation),
-    //    but it is used as *set*.
-    // 2. WeakHashMap support null value.
+     /*
+     1、此hold变量是TransmittableThreadLocal的静态 InheritableThreadLocal 变量，只初始化一次，所有TransmittableThreadLocal实例共享，
+     借助重写的get和set方法，同一线程内所有的TransmittableThreadLocal变量都会保存到该线程内的holder变量中
+     2、holder变量重写了InheritableThreadLocal的childValue(T parent)方法，默认实现是将parent直接返回，使父子线程的InheritableThreadLocal
+     变量指向同一个对象，子线程对该对象的修改在父线程中也是可见的。重写后父子线程中InheritableThreadLocal是两个独立的对象，只是子线程的
+     TransmittableThreadLocal变量初始化的时候取值和父线程一致。
+     3、replay和restore方法在每次线程执行完任务后恢复至线程创建时的子线程的holder变量的状态
+      */
     private static InheritableThreadLocal<Map<TransmittableThreadLocal<?>, ?>> holder =
             new InheritableThreadLocal<Map<TransmittableThreadLocal<?>, ?>>() {
                 @Override
@@ -117,11 +101,13 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
     private void addValue() {
         if (!holder.get().containsKey(this)) {
             holder.get().put(this, null); // WeakHashMap supports null value.
+            System.out.println("addValue holder size-->"+holder.get().size()+",add value-->"+this.get());
         }
     }
 
     private void removeValue() {
         holder.get().remove(this);
+        System.out.println("removeValue holder size-->"+holder.get().size());
     }
 
     private static void doExecuteCallback(boolean isBefore) {
@@ -167,88 +153,14 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
     }
 
     /**
-     * {@link Transmitter} transmit all {@link TransmittableThreadLocal} values of current thread to
-     * other thread by static method {@link #capture()} =&gt; {@link #replay(Object)} =&gt; {@link #restore(Object)} (aka {@code CRR} operation).
-     * <p>
-     * {@link Transmitter} is <b><i>internal</i></b> manipulation api for <b><i>framework/middleware integration</i></b>;
-     * In general, you will <b><i>never</i></b> use it in the <i>biz/application code</i>!
-     * <p>
-     * Below is the example code:
-     *
-     * <pre><code>
-     * ///////////////////////////////////////////////////////////////////////////
-     * // in thread A, capture all TransmittableThreadLocal values of thread A
-     * ///////////////////////////////////////////////////////////////////////////
-     *
-     * Object captured = Transmitter.capture(); // (1)
-     *
-     * ///////////////////////////////////////////////////////////////////////////
-     * // in thread B
-     * ///////////////////////////////////////////////////////////////////////////
-     *
-     * // replay all TransmittableThreadLocal values from thread A
-     * Object backup = Transmitter.replay(captured); // (2)
-     * try {
-     *     // your biz logic, run with the TransmittableThreadLocal values of thread B
-     *     System.out.println("Hello");
-     *     // ...
-     *     return "World";
-     * } finally {
-     *     // restore the TransmittableThreadLocal of thread B when replay
-     *     Transmitter.restore(backup); (3)
-     * }
-     * </code></pre>
-     * <p>
-     * see the implementation code of {@link TtlRunnable} and {@link TtlCallable} for more actual code sample.
-     * <hr>
-     * Of course, {@link #replay(Object)} and {@link #restore(Object)} operation can be simplified
-     * by util methods {@link #runCallableWithCaptured(Object, Callable)} or {@link #runSupplierWithCaptured(Object, Supplier)}
-     * and the adorable {@code Java 8 lambda syntax}.
-     * <p>
-     * Below is the example code:
-     *
-     * <pre><code>
-     * ///////////////////////////////////////////////////////////////////////////
-     * // in thread A, capture all TransmittableThreadLocal values of thread A
-     * ///////////////////////////////////////////////////////////////////////////
-     *
-     * Object captured = Transmitter.capture(); // (1)
-     *
-     * ///////////////////////////////////////////////////////////////////////////
-     * // in thread B
-     * ///////////////////////////////////////////////////////////////////////////
-     *
-     * String result = runSupplierWithCaptured(captured, () -&gt; {
-     *      // your biz logic, run with the TransmittableThreadLocal values of thread A
-     *      System.out.println("Hello");
-     *      ...
-     *      return "World";
-     * }); // (2) + (3)
-     * </code></pre>
-     * <p>
-     * The reason of providing 2 util methods is the different {@code throws Exception} type from biz logic({@code lambda}):
-     * <ol>
-     * <li>{@link #runCallableWithCaptured(Object, Callable)}: No {@code throws}</li>
-     * <li>{@link #runSupplierWithCaptured(Object, Supplier)}: {@code throws Exception}</li>
-     * </ol>
-     * <p>
-     * If you has the different {@code throws Exception},
-     * you can define your own util method with your own {@code throws Exception} type function interface({@code lambda}).
-     *
-     * @author Yang Fang (snoop dot fy at gmail dot com)
-     * @author Jerry Lee (oldratlee at gmail dot com)
-     * @see TtlRunnable
-     * @see TtlCallable
-     * @since 2.3.0
+
      */
     public static class Transmitter {
         /**
-         * Capture all {@link TransmittableThreadLocal} values in current thread.
-         *
-         * @return the captured {@link TransmittableThreadLocal} values
-         * @since 2.3.0
+         * 捕获父线程的所有TransmittableThreadLocal变量及其变量值，将父线程此时的TransmittableThreadLocal变量备份
          */
         public static Object capture() {
+            System.out.println("capture hold size-->"+holder.get().size());
             Map<TransmittableThreadLocal<?>, Object> captured = new HashMap<TransmittableThreadLocal<?>, Object>();
             for (TransmittableThreadLocal<?> threadLocal : holder.get().keySet()) {
                 captured.put(threadLocal, threadLocal.copyValue());
@@ -260,37 +172,44 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
          * Replay the captured {@link TransmittableThreadLocal} values from {@link #capture()},
          * and return the backup {@link TransmittableThreadLocal} values in current thread before replay.
          *
-         * @param captured captured {@link TransmittableThreadLocal} values from other thread from {@link #capture()}
-         * @return the backup {@link TransmittableThreadLocal} values before replay
-         * @see #capture()
-         * @since 2.3.0
+         * 1、capturedMap中保存的TransmittableThreadLocal变量的取值在父子线程中不一定相同，但是TransmittableThreadLocal变量在Map中对应的value不变，
+         * 即始终是capture()执行时父线程的TransmittableThreadLocal变量的取值。
+         * 2、
+         *
          */
         public static Object replay(Object captured) {
             @SuppressWarnings("unchecked")
             Map<TransmittableThreadLocal<?>, Object> capturedMap = (Map<TransmittableThreadLocal<?>, Object>) captured;
             Map<TransmittableThreadLocal<?>, Object> backup = new HashMap<TransmittableThreadLocal<?>, Object>();
+            System.out.println("replay before holder size-->"+holder.get().size());
+            try {
+                for (Iterator<? extends Map.Entry<TransmittableThreadLocal<?>, ?>> iterator = holder.get().entrySet().iterator();
+                     iterator.hasNext(); ) {
+                    Map.Entry<TransmittableThreadLocal<?>, ?> next = iterator.next();
+                    TransmittableThreadLocal<?> threadLocal = next.getKey();
 
-            for (Iterator<? extends Map.Entry<TransmittableThreadLocal<?>, ?>> iterator = holder.get().entrySet().iterator();
-                 iterator.hasNext(); ) {
-                Map.Entry<TransmittableThreadLocal<?>, ?> next = iterator.next();
-                TransmittableThreadLocal<?> threadLocal = next.getKey();
+                    // backup
+                    backup.put(threadLocal, threadLocal.get());
 
-                // backup
-                backup.put(threadLocal, threadLocal.get());
-
-                // clear the TTL values that is not in captured
-                // avoid the extra TTL values after replay when run task
-                if (!capturedMap.containsKey(threadLocal)) {
-                    iterator.remove();
-                    threadLocal.superRemove();
+                    //此处操作和setTtlValuesTo方法可以确保holder中保存的TransmittableThreadLocal变量和capturedMap一致
+                    //即恢复子线程中的holder变量至capture()执行时主线程的holder变量的状态
+                    if (!capturedMap.containsKey(threadLocal)) {
+                        iterator.remove();
+                        System.out.println("replay remove value-->"+threadLocal.superGet()+",holder size-->"+holder.get().size());
+                        threadLocal.superRemove();
+                    }
                 }
+
+                // set values to captured TTL
+                setTtlValuesTo(capturedMap);
+
+                // call beforeExecute callback
+                doExecuteCallback(true);
+
+                System.out.println("replay after holder size-->"+holder.get().size());
+            } catch (Exception e) {
+                System.out.println(e.getMessage());
             }
-
-            // set values to captured TTL
-            setTtlValuesTo(capturedMap);
-
-            // call beforeExecute callback
-            doExecuteCallback(true);
 
             return backup;
         }
@@ -307,42 +226,44 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
             // call afterExecute callback
             doExecuteCallback(false);
 
+            System.out.println("restore before holder size-->"+holder.get().size());
+
             for (Iterator<? extends Map.Entry<TransmittableThreadLocal<?>, ?>> iterator = holder.get().entrySet().iterator();
                  iterator.hasNext(); ) {
                 Map.Entry<TransmittableThreadLocal<?>, ?> next = iterator.next();
                 TransmittableThreadLocal<?> threadLocal = next.getKey();
 
-                // clear the TTL values that is not in backup
-                // avoid the extra TTL values after restore
+                // 同replay，确保backUp中包含的TransmittableThreadLocal变量和holder中保持一致，即恢复线程的holder变量至此次job
+                //开始运行的状态
                 if (!backupMap.containsKey(threadLocal)) {
                     iterator.remove();
+                    System.out.println("restore remove value-->"+threadLocal.superGet()+",holder size-->"+holder.get().size());
                     threadLocal.superRemove();
                 }
             }
 
             // restore TTL values
             setTtlValuesTo(backupMap);
+            System.out.println("restore after holder size-->"+holder.get().size());
         }
 
         private static void setTtlValuesTo(Map<TransmittableThreadLocal<?>, Object> ttlValues) {
             for (Map.Entry<TransmittableThreadLocal<?>, Object> entry : ttlValues.entrySet()) {
                 @SuppressWarnings("unchecked")
                 TransmittableThreadLocal<Object> threadLocal = (TransmittableThreadLocal<Object>) entry.getKey();
+                /*
+                   1、当传入的值是capturedMap时，entry.getValue()为父线程中此变量的取值，如果是backupMap则是子线程中次变量的取值
+                   2、如果此时子线程的holder变量中不包含此变量，则通过set方法加入到holder中
+                 */
+                System.out.println("setTtlValuesTo before value-->"+threadLocal.get());
                 threadLocal.set(entry.getValue());
+                System.out.println("setTtlValuesTo after value-->"+threadLocal.get());
             }
         }
 
         /**
          * Util method for simplifying {@link #replay(Object)} and {@link #restore(Object)} operation.
          *
-         * @param captured captured {@link TransmittableThreadLocal} values from other thread from {@link #capture()}
-         * @param bizLogic biz logic
-         * @param <R>      the return type of biz logic
-         * @return the return value of biz logic
-         * @see #capture()
-         * @see #replay(Object)
-         * @see #restore(Object)
-         * @since 2.3.1
          */
         public static <R> R runSupplierWithCaptured(Object captured, Supplier<R> bizLogic) {
             Object backup = replay(captured);
@@ -355,16 +276,6 @@ public class TransmittableThreadLocal<T> extends InheritableThreadLocal<T> {
 
         /**
          * Util method for simplifying {@link #replay(Object)} and {@link #restore(Object)} operation.
-         *
-         * @param captured captured {@link TransmittableThreadLocal} values from other thread from {@link #capture()}
-         * @param bizLogic biz logic
-         * @param <R>      the return type of biz logic
-         * @return the return value of biz logic
-         * @throws Exception exception threw by biz logic
-         * @see #capture()
-         * @see #replay(Object)
-         * @see #restore(Object)
-         * @since 2.3.1
          */
         public static <R> R runCallableWithCaptured(Object captured, Callable<R> bizLogic) throws Exception {
             Object backup = replay(captured);
